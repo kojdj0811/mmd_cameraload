@@ -1,12 +1,24 @@
-﻿using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
 using System.Runtime.InteropServices;
 
-public class MMD_VmdCameraLoad : MonoBehaviour {
+public class MMD_VmdCameraLoad : MonoBehaviour
+{
+
+    public bool isStartAuto = true;
 
     public TextAsset Select_VMD;     //vmdファイル
     public GameObject CameraCenter;  //カメラ中心
     public Camera MainCamera;        //カメラ
     public GameObject MMD_model;     //MMDモデル
+
+    public List<CameraTransData> cameraTransDatas;
+    public List<Vector2> cutTime_MinMax;
+
+    private Vector3 initCameraCenterPos;
+    private Vector3 initCameraCenterRot;
+
 
     private bool success = false;    //データの準備完了フラグ
     CameraData[] Cam_m;
@@ -56,12 +68,27 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
         public int[] Bezier;    //ベジェ曲線の補間パラメータ
         public bool originalframe;
     }
+
+    //This is my custom class to use easily.
+    public class CameraTransData
+    {
+        public Vector3 localPosition;
+        public float distance;
+        public Quaternion rotation;
+    }
+
     void Awake()
     {
+        if (!isStartAuto) return;
+
+        initCameraCenterPos = CameraCenter.transform.position;
+        initCameraCenterRot = CameraCenter.transform.rotation.eulerAngles;
+
         target_animator = MMD_model.GetComponent<Animator>();
     }
     // Use this for initialization
-    void Start () {
+    void Start()
+    {
 
         byte[] raw_data_org = Select_VMD.bytes;
         byte[] frameSum = new byte[4];
@@ -103,7 +130,7 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
             conversionAngle(ref Cam[i].Rot_z);
             //ベジェ曲線
             Cam[i].Bezier = new int[24];
-            for (int j = 0;j < 24;j++)
+            for (int j = 0; j < 24; j++)
             {
                 frame_data_1byte[0] = raw_data_org[index++];
                 Cam[i].Bezier[j] = System.Convert.ToInt32(System.BitConverter.ToString(frame_data_1byte, 0), 16);
@@ -118,7 +145,7 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
         }
 
         //並び順バラバラなのでソート
-        Qsort(ref Cam, 0,Cam.Length-1);
+        Qsort(ref Cam, 0, Cam.Length - 1);
         //以降補間処理
         Cam_m = new CameraData[Cam[frameSum_int - 1].frame + 1]; //最終フレーム分用意
 
@@ -133,13 +160,13 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
             Addframe = Cam[i + 1].frame - Cam[i].frame;
             for (int j = 1; j < Addframe; j++)
             {
-                
+
                 Cam_m[wIndex].frame = wIndex;
-                Cam_m[wIndex].Pos_x = Cam[i].Pos_x + (Cam[i + 1].Pos_x - Cam[i].Pos_x) * 
+                Cam_m[wIndex].Pos_x = Cam[i].Pos_x + (Cam[i + 1].Pos_x - Cam[i].Pos_x) *
                                       (BezierCurve(new Vector2(0, 0), new Vector2(Cam[i + 1].Bezier[0], Cam[i + 1].Bezier[2]),
                                                    new Vector2(Cam[i + 1].Bezier[1], Cam[i + 1].Bezier[3]), new Vector2(127, 127),
                                                    (float)(1.0 * j / (Addframe))).y) / 127;
-                Cam_m[wIndex].Pos_y = Cam[i].Pos_y + (Cam[i + 1].Pos_y - Cam[i].Pos_y) * 
+                Cam_m[wIndex].Pos_y = Cam[i].Pos_y + (Cam[i + 1].Pos_y - Cam[i].Pos_y) *
                                       (BezierCurve(new Vector2(0, 0), new Vector2(Cam[i + 1].Bezier[4], Cam[i + 1].Bezier[6]),
                                                    new Vector2(Cam[i + 1].Bezier[5], Cam[i + 1].Bezier[7]), new Vector2(127, 127),
                                                    (float)(1.0 * j / (Addframe))).y) / 127;
@@ -172,47 +199,72 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
             Cam_m[wIndex] = Cam[i + 1];
             Cam_m[wIndex++].originalframe = true;
         }
+
+
+        //Cast camera data to my custom class
+        cameraTransDatas = new List<CameraTransData>();
+        for (int i = 0; i < Cam_m.Length; i++)
+        {
+            CameraTransData data = new CameraTransData();
+            data.localPosition = new Vector3(Cam_m[i].Pos_x, Cam_m[i].Pos_y, Cam_m[i].Pos_z);
+            data.distance = Cam_m[i].distans;
+            data.rotation = new Quaternion();
+            data.rotation = Quaternion.Euler(Cam_m[i].Rot_x, Cam_m[i].Rot_y, Cam_m[i].Rot_z);
+
+            cameraTransDatas.Add(data);
+        }
+
+
         success = true;
     }
 
     private void Update()
     {
+        MoveCamera(Time.timeSinceLevelLoad);
+        //nowframe = getAnimationFrame();
+    }
+
+    public void MoveCamera(float nowFrame)
+    {
         //カメラ情報が完成したらカメラスタート
         if (success)
         {
-            if (t != (int)nowframe)
-            {
-                //新しいフレームの処理
-                t = (int)nowframe;
-                //最終フレームを超えないようにする処理
-                if (t < Cam_m.Length - 1)
-                {
-                    CameraCenter.transform.localPosition = new Vector3(Cam_m[t].Pos_x / 12.5f + MMD_model.transform.localPosition.x,
-                                                                       Cam_m[t].Pos_y / 12.5f + MMD_model.transform.localPosition.y,
-                                                                       Cam_m[t].Pos_z / 12.5f + MMD_model.transform.localPosition.z);
-                    this.transform.localPosition = new Vector3(this.transform.localPosition.x, this.transform.localPosition.y, Cam_m[t].distans / 12.5f);
-                    CameraCenter.transform.rotation = Quaternion.Euler(-Cam_m[t].Rot_x, -Cam_m[t].Rot_y, -Cam_m[t].Rot_z);
-                    MainCamera.fieldOfView = Cam_m[t].viewAngle;
-                }
-            }
-            else
-            {
-                //同じフレームが再度処理された場合の処理
-                if (t + 1 < Cam_m.Length - 1 && !Cam_m[t + 1].originalframe)
-                {
-                    t_f = nowframe - (int)nowframe;
-                    CameraCenter.transform.localPosition = new Vector3(((Cam_m[t + 1].Pos_x - Cam_m[t].Pos_x) * t_f + Cam_m[t].Pos_x) / 12.5f + MMD_model.transform.localPosition.x,
-                                                                       ((Cam_m[t + 1].Pos_y - Cam_m[t].Pos_y) * t_f + Cam_m[t].Pos_y) / 12.5f + MMD_model.transform.localPosition.y,
-                                                                       ((Cam_m[t + 1].Pos_z - Cam_m[t].Pos_z) * t_f + Cam_m[t].Pos_z) / 12.5f + MMD_model.transform.localPosition.z);
-                    this.transform.localPosition = new Vector3(this.transform.localPosition.x, this.transform.localPosition.y, Cam_m[t].distans / 12.5f);
-                    CameraCenter.transform.rotation = Quaternion.Euler((-Cam_m[t + 1].Rot_x - -Cam_m[t].Rot_x) * t_f + -Cam_m[t].Rot_x,
-                                                                        (-Cam_m[t + 1].Rot_y - -Cam_m[t].Rot_y) * t_f + -Cam_m[t].Rot_y,
-                                                                        (-Cam_m[t + 1].Rot_z - -Cam_m[t].Rot_z) * t_f + -Cam_m[t].Rot_z);
-                    MainCamera.fieldOfView = (Cam_m[t + 1].viewAngle - Cam_m[t].viewAngle) * t_f + Cam_m[t].viewAngle;
-                }
-            }
+            float returnValue = 0.0f;
+            var clipInfoList = target_animator.GetCurrentAnimatorClipInfo(0);
+            if (clipInfoList != null)
+                returnValue = target_animator.runtimeAnimatorController.animationClips[0].length;
+
+            float currentAnimationTime = (nowFrame / returnValue) * cameraTransDatas.Count;
+            int currentCameraIndex = (int)currentAnimationTime;
+            float u = currentAnimationTime - currentCameraIndex;
+
+            foreach (Vector2 cutTime in cutTime_MinMax)
+                if (nowFrame > cutTime.x && nowFrame < cutTime.y)
+                    return;
+
+
+
+            if (currentCameraIndex > cameraTransDatas.Count)
+                return;
+
+
+            Vector3 targetCameraCenterPos = cameraTransDatas[currentCameraIndex].localPosition / 12.5f;
+            Vector3 nextCameraCenterPos = cameraTransDatas[currentCameraIndex + 1].localPosition / 12.5f;
+            targetCameraCenterPos = Vector3.Lerp(targetCameraCenterPos, nextCameraCenterPos, u);
+
+            Vector3 targetMainCameraPos = new Vector3(transform.localPosition.x, transform.localPosition.y, cameraTransDatas[currentCameraIndex].distance / 12.5f);
+            Vector3 nextMainCameraPos = new Vector3(transform.localPosition.x, transform.localPosition.y, cameraTransDatas[currentCameraIndex + 1].distance / 12.5f);
+            targetMainCameraPos = Vector3.Lerp(targetMainCameraPos, nextMainCameraPos, u);
+
+            Quaternion targetCameraCenterRot = cameraTransDatas[currentCameraIndex].rotation;
+            Quaternion nextCameraCenterRot = cameraTransDatas[currentCameraIndex + 1].rotation;
+            targetCameraCenterRot = Quaternion.Lerp(targetCameraCenterRot, nextCameraCenterRot, u);
+
+
+            CameraCenter.transform.localPosition = targetCameraCenterPos + initCameraCenterPos;
+            transform.localPosition = targetMainCameraPos;
+            CameraCenter.transform.rotation = Quaternion.Euler(targetCameraCenterRot.eulerAngles + initCameraCenterRot);
         }
-        nowframe = getAnimationFrame();
     }
 
     private float getAnimationFrame()
@@ -222,16 +274,12 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
 
         var clipInfoList = target_animator.GetCurrentAnimatorClipInfo(0);
         if (clipInfoList != null)
-        {
-            var clip = clipInfoList[0].clip;
-            var stateInfo = target_animator.GetCurrentAnimatorStateInfo(0);
-            returnValue = clip.length * stateInfo.normalizedTime * clip.frameRate;
-        }
+            returnValue = clipInfoList.Length;
 
         return returnValue;
     }
 
-    float getVmdCamera( ref int index ,byte[] data)
+    float getVmdCamera(ref int index, byte[] data)
     {
         Union union = new Union();
         byte[] raw_data = new byte[4];
@@ -250,7 +298,7 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
         rot = (float)(rot * 180 / System.Math.PI);
     }
     //クイックソート
-    void Qsort(ref CameraData[] data, int left ,int right)
+    void Qsort(ref CameraData[] data, int left, int right)
     {
         int i, j;
         int pivot;
@@ -260,8 +308,8 @@ public class MMD_VmdCameraLoad : MonoBehaviour {
         pivot = data[(left + right) / 2].frame;
         do
         {
-            while ((i < right)&&(data[i].frame < pivot)) i++;
-            while ((j > left) &&(pivot < data[j].frame)) j--;
+            while ((i < right) && (data[i].frame < pivot)) i++;
+            while ((j > left) && (pivot < data[j].frame)) j--;
             if (i <= j)
             {
                 tmp = data[i];
